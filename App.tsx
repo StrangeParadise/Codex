@@ -1,52 +1,58 @@
 import { useRef, useState } from 'react';
-import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { lookup } from './src/product';
+import { lookup, lookupPrice, type PriceResult } from './src/product';
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
   const [barcode, setBarcode] = useState('');
   const [product, setProduct] = useState<Awaited<ReturnType<typeof lookup>> | null>(null);
+  const [price, setPrice] = useState<PriceResult | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
   async function search(code: string) {
     if (locked.current) return;
-    locked.current = true; setScanning(false); setBarcode(code); setBusy(true); setError(''); setProduct(null);
-    try { setProduct(await lookup(code)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Lookup failed. Check your connection.'); }
+    locked.current = true; setScanning(false); setBarcode(code); setBusy(true); setError(''); setProduct(null); setPrice(null);
+    try {
+      const p = await lookup(code); setProduct(p);
+      setPrice(await lookupPrice(code));
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load this item. Please try again.'); }
     finally { locked.current = false; setBusy(false); }
   }
   async function scan() {
-    const p = permission?.granted ? permission : await requestPermission();
-    if (p.granted) setScanning(true);
-    else setError('Camera access is unavailable. Enter the barcode below, or enable Camera in iPhone Settings.');
+    setError('');
+    try {
+      const p = permission?.granted ? permission : await requestPermission();
+      if (p.granted) setScanning(true);
+      else setError('Allow camera access in iPhone Settings, or type the barcode below.');
+    } catch { setError('Could not open the camera. You can type the barcode instead.'); }
   }
-  return <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+  const health = product?.health;
+  const tone = health ? health.value >= 70 ? '#b9efbc' : health.value >= 40 ? '#ffe5a0' : '#ffc9bc' : '#e6e9e2';
+  return <ScrollView style={s.screen} contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
     <StatusBar style="dark" />
-    <Text style={styles.title}>Shelf Check</Text>
-    <Text>Scan Australian supermarket products. Nutrition coverage varies; prices are not yet connected.</Text>
-    {scanning ? <View><CameraView style={styles.camera} barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'] }} onBarcodeScanned={({ data }) => { void search(data); }} /><Button title="Cancel scanning" onPress={() => setScanning(false)} /></View>
-      : <Button title="Scan barcode" onPress={() => { void scan(); }} disabled={busy} />}
-    <TextInput accessibilityLabel="Barcode" style={styles.input} placeholder="Enter EAN or UPC barcode" keyboardType="number-pad" value={barcode} onChangeText={setBarcode} editable={!busy} />
-    <Button title="Look up product" disabled={busy || scanning} onPress={() => { void search(barcode.trim()); }} />
-    {busy && <ActivityIndicator accessibilityLabel="Loading product" />}
-    {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-    {product && <View style={styles.card}>
-      <Text style={styles.heading}>{product.name}</Text><Text>{product.brand}</Text>
-      <Text style={styles.heading}>{product.health ? `${product.health.value}/100` : 'Score unavailable'}</Text>
-      <Text>Experimental nutrient score. Higher means lower amounts of the three nutrients below. It is not an Australian Health Star Rating or medical advice and does not assess overall food quality.</Text>
-      <Text>Per 100 g (or 100 mL as supplied by the source)</Text>
-      <Text>Sugars: {product.sugars === null ? 'Unavailable' : `${product.sugars} g`}</Text>
-      <Text>Saturated fat: {product.saturatedFat === null ? 'Unavailable' : `${product.saturatedFat} g`}</Text>
-      <Text>Sodium: {product.sodium === null ? 'Unavailable' : `${Math.round(product.sodium)} mg`}</Text>
-      {product.health?.parts.map(p => <Text key={p.label}>{p.label}: −{p.penalty.toFixed(1)} points</Text>)}
-      {!product.health && <Text>All three nutrient values are required to calculate a score.</Text>}
-      <Text>Price: unavailable — no retailer price provider connected.</Text>
-      <Text>Source: Open Food Facts contributors, ODbL. Community data may be incomplete or outdated; check the pack label. Barcode does not identify store, current price, or Australian origin.</Text>
-    </View>}
+    <View style={s.top}><Text style={s.wordmark}>can i have it?</Text><Text style={s.pill}>AUSTRALIA</Text></View>
+    <View style={s.hero}><Text style={[s.eyebrow, { color: '#d4f58a' }]}>A LITTLE CLARITY IN EVERY AISLE</Text><Text accessibilityRole="header" style={s.title}>Good food.{'\n'}Fewer guesses.</Text><Text style={s.subtitle}>Scan the pack. Meet the product. See what’s inside.</Text>
+      <Pressable accessibilityRole="button" disabled={busy} onPress={() => { void scan(); }} style={[s.button, busy && s.disabled]}><Text style={s.buttonText}>▥   Scan a barcode</Text></Pressable>
+      <Text style={s.heroFoot}>Nutrition • Price records • Health score</Text>
+    </View>
+    {scanning && <View style={s.cameraCard}><CameraView style={s.camera} barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a'] }} onBarcodeScanned={({ data }) => { void search(data); }} /><Text style={s.small}>Hold one barcode inside the camera view.</Text><Pressable accessibilityRole="button" onPress={() => setScanning(false)} style={s.secondary}><Text>Cancel scan</Text></Pressable></View>}
+    <View style={s.manual}><Text style={s.label}>No camera? Type the barcode</Text><View style={s.inputRow}><TextInput accessibilityLabel="Barcode number" style={s.input} placeholder="e.g. 930…" keyboardType="number-pad" value={barcode} onChangeText={setBarcode} editable={!busy && !scanning} /><Pressable accessibilityRole="button" accessibilityLabel="Look up barcode" disabled={busy || scanning || !barcode.trim()} onPress={() => { void search(barcode.trim()); }} style={[s.go, (busy || scanning || !barcode.trim()) && s.disabled]}><Text style={s.buttonText}>Go →</Text></Pressable></View></View>
+    {!!error && <Text accessibilityRole="alert" style={s.error}>{error}</Text>}
+    {busy && <View style={s.loading}><ActivityIndicator color="#245b40" /><Text>{product ? 'Looking for an Australian price record…' : 'Looking up your item…'}</Text></View>}
+    {product ? <>
+      <View style={s.productCard}><View style={s.productTop}>{product.image && <Image accessibilityLabel={product.name} source={{ uri: product.image }} style={s.image} resizeMode="contain" />}<View style={s.productCopy}><Text style={s.eyebrow}>{product.brand || 'YOUR FIND'}</Text><Text accessibilityRole="header" style={s.productName}>{product.name}</Text>{!!product.quantity && <Text style={s.small}>{product.quantity}</Text>}</View></View><Text style={s.description}>{product.description || 'No extra description is available for this item yet.'}</Text></View>
+      <View style={s.priceTag}><View style={s.priceHeading}><Text style={s.eyebrow}>PRICE TAG</Text><Text style={s.pill}>AUD</Text></View><Text style={s.price}>{price?.status === 'found' ? `$${price.amount.toFixed(2)}` : busy ? 'Checking…' : 'No price available'}</Text>{price?.status === 'found' ? <><Text style={s.description}>{price.store} · {price.date}</Text><Text style={s.small}>Reported price from Open Prices. It may have changed and may be from another store.{price.discount ? ' This was a discounted price.' : ''}</Text></> : <Text style={s.small}>{price?.status === 'unavailable' ? 'The price service could not be reached. Try this item again later.' : 'We only show real Australian price records. No record does not mean this item is free.'}</Text>}</View>
+      <View style={[s.scoreCard, { backgroundColor: tone }]}><Text style={s.eyebrow}>HEALTH SCORE · EXPERIMENTAL</Text><View style={s.scoreRow}><Text style={s.score}>{health ? health.value : '—'}</Text><Text style={s.outOf}>/ 100</Text></View><Text style={s.scoreTitle}>{health ? 'Here’s how it adds up' : 'We need more nutrition details'}</Text><Text style={s.description}>Higher scores mean less sugar, saturated fat and sodium in this simple model.</Text><View style={s.track}><View style={[s.fill, { width: `${health?.value ?? 0}%` }]} /></View>{health?.parts.map(p => <View key={p.label} style={s.line}><Text>{p.label}</Text><Text style={s.bold}>−{p.penalty.toFixed(1)} points</Text></View>)}<Text style={s.small}>{health ? 'Starts at 100. Points are taken off for the nutrients above.' : 'A score needs all three nutrient values. Missing details are never treated as zero.'} This is not an official Health Star Rating or medical advice. It leaves out beneficial nutrients and food type.</Text></View>
+      <View style={s.productCard}><Text style={s.sectionTitle}>Inside the pack</Text><Text style={s.small}>Per 100 g / 100 mL, as supplied by the source</Text>{[['Sugars', product.sugars, 'g'], ['Saturated fat', product.saturatedFat, 'g'], ['Sodium', product.sodium, 'mg']].map(([label, value, unit]) => <View style={s.line} key={String(label)}><Text>{label}</Text><Text style={s.bold}>{value === null ? 'Not listed' : `${Number(value).toFixed(unit === 'mg' ? 0 : 1)} ${unit}`}</Text></View>)}</View>
+      <Text style={s.footer}>Product details: Open Food Facts contributors (ODbL). Price records: Open Prices contributors (ODbL). Community data can be missing or out of date. Check the pack and shelf label. Scanning sends the barcode to these services.</Text>
+    </> : !busy && <View style={s.empty}><Text style={s.sectionTitle}>Your next find starts here.</Text><Text style={s.small}>Scan a packaged food to see its details. Australian product and price coverage varies.</Text></View>}
+    <Text style={s.bottom}>CAN I HAVE IT?   /   KNOW YOUR FOOD</Text>
   </ScrollView>;
 }
-const styles = StyleSheet.create({ page: { padding: 24, paddingTop: 64, gap: 18 }, title: { fontSize: 34, fontWeight: '700', color: '#155b43' }, heading: { fontSize: 23, fontWeight: '600' }, input: { borderWidth: 1, borderColor: '#888', borderRadius: 8, padding: 14 }, camera: { height: 280 }, error: { color: '#a12020' }, card: { padding: 18, backgroundColor: '#eef5ef', borderRadius: 12, gap: 12 } });
+const s = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#f6f5ef' }, page: { padding: 22, paddingTop: 65, paddingBottom: 44, gap: 20 }, top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }, wordmark: { fontSize: 23, fontWeight: '800', color: '#214f38', letterSpacing: -1 }, pill: { fontSize: 10, fontWeight: '700', letterSpacing: 1, color: '#24563c', backgroundColor: '#e5ecdc', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 20 }, hero: { backgroundColor: '#224f39', borderRadius: 28, padding: 24, gap: 20 }, eyebrow: { fontSize: 10, letterSpacing: 1.8, fontWeight: '700', color: '#65735f' }, title: { fontSize: 43, lineHeight: 48, fontWeight: '700', letterSpacing: -1.5, color: '#fffcef' }, subtitle: { color: '#e0e7d9', fontSize: 16, lineHeight: 24 }, button: { backgroundColor: '#d4f58a', padding: 19, borderRadius: 16, alignItems: 'center' }, buttonText: { color: '#183c2a', fontWeight: '700', fontSize: 17 }, heroFoot: { color: '#d7e5cc', fontSize: 11, textAlign: 'center' }, manual: { gap: 10 }, label: { fontSize: 13, color: '#596453', fontWeight: '600' }, inputRow: { flexDirection: 'row', gap: 10 }, input: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: '#d6dcce', backgroundColor: '#fff', borderRadius: 15, padding: 16, fontSize: 16 }, go: { backgroundColor: '#d4f58a', justifyContent: 'center', padding: 16, borderRadius: 15 }, disabled: { opacity: 0.4 }, cameraCard: { gap: 12 }, camera: { height: 290, borderRadius: 20 }, secondary: { padding: 15, backgroundColor: '#e5ecdc', borderRadius: 12, alignItems: 'center' }, loading: { flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }, error: { color: '#992d25', padding: 16, backgroundColor: '#ffe8e2', borderRadius: 12 }, productCard: { backgroundColor: '#fff', padding: 22, borderRadius: 24, gap: 14 }, productTop: { flexDirection: 'row', gap: 18, alignItems: 'center' }, productCopy: { flex: 1, gap: 8 }, image: { width: 76, height: 105 }, productName: { fontSize: 25, fontWeight: '700', letterSpacing: -0.5, color: '#243e2d' }, description: { fontSize: 15, lineHeight: 23, color: '#394d3f' }, small: { fontSize: 12, lineHeight: 19, color: '#586555' }, priceTag: { backgroundColor: '#fff4d7', borderWidth: 1, borderStyle: 'dashed', borderColor: '#d6bc72', padding: 22, borderRadius: 22, gap: 12 }, priceHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, price: { fontSize: 30, fontWeight: '800', color: '#50431e', letterSpacing: -1 }, scoreCard: { padding: 24, borderRadius: 26, gap: 16 }, scoreRow: { flexDirection: 'row', alignItems: 'baseline', gap: 10 }, score: { fontSize: 88, lineHeight: 96, letterSpacing: -5, fontWeight: '800', color: '#204b33' }, outOf: { fontSize: 23, color: '#3b6043' }, scoreTitle: { fontSize: 21, fontWeight: '700', color: '#204b33' }, track: { height: 8, backgroundColor: '#ffffff88', borderRadius: 5, overflow: 'hidden' }, fill: { height: 8, backgroundColor: '#245b40', borderRadius: 5 }, line: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#294a321a' }, bold: { fontWeight: '700', color: '#23412e' }, sectionTitle: { fontSize: 20, fontWeight: '700', color: '#254b35' }, footer: { fontSize: 11, lineHeight: 18, color: '#68735f' }, empty: { padding: 26, gap: 12, borderWidth: 1, borderColor: '#dce2d1', borderRadius: 24 }, bottom: { fontSize: 9, letterSpacing: 2, color: '#707b65', textAlign: 'center', marginTop: 8 }
+});

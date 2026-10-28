@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Shelf Check",
+    "name": "Can I have it?",
     "slug": "shelf-check",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -25,7 +25,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Shelf Check to scan supermarket barcodes.",
+          "cameraPermission": "Allow Can I have it? to scan food barcodes.",
           "recordAudioAndroid": false
         }
       ]
