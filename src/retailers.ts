@@ -1,4 +1,4 @@
-export type Retailer = 'Woolworths' | 'ALDI' | 'Coles' | 'IGA';
+export type Retailer = 'Woolworths' | 'ALDI' | 'Coles' | 'IGA' | 'Costco AU';
 export type Listing = {
   retailer: Retailer; name: string; brand: string; description: string; quantity: string;
   image: string | null; price: number | null; url: string; ingredients: string; categories: string;
@@ -69,19 +69,22 @@ const normalize = (value: string) => value.normalize('NFKD').replace(/[\u0300-\u
 const sizePattern = /(\d+(?:\.\d+)?)\s*(ml|kg|litres?|liters?|grams?|l|g)\b/i;
 function packSize(value: string): string | null {
   const m = value.match(sizePattern);
-  if (!m) return null;
+  if (!m) {
+    const count = value.match(/\b(\d+)\s*(?:pack|pk|count|ct)\b/i);
+    return count ? `${count[1]}count` : null;
+  }
   const unit = m[2].toLowerCase();
   const volume = /^(ml|l|lit)/.test(unit);
   const amount = Number(m[1]) * (unit === 'kg' || (volume && unit !== 'ml') ? 1000 : 1);
   const before = value.slice(0, m.index);
   const after = value.slice((m.index ?? 0) + m[0].length);
-  const count = before.match(/(\d+)\s*[x×]\s*$/i)?.[1] || after.match(/^\s*[x×]\s*(\d+)/i)?.[1] || value.match(/\b(\d+)\s*(?:pack|pk)\b/i)?.[1] || '1';
+  const count = before.match(/(\d+)\s*[x×]\s*$/i)?.[1] || after.match(/^\s*[x×]\s*(\d+)/i)?.[1] || value.match(/\b(\d+)\s*(?:pack|pk|count|ct)\b/i)?.[1] || '1';
   return `${count}x${amount}${volume ? 'ml' : 'g'}`;
 }
 function productName(name: string, brand: string) {
-  const cleaned = name.replace(new RegExp(sizePattern.source, 'gi'), ' ').replace(/\b\d+\s*(?:pack|pk)\b/gi, ' ').replace(/\b\d+\s*[x×]|[x×]\s*\d+\b/gi, ' ');
+  const cleaned = name.replace(new RegExp(sizePattern.source, 'gi'), ' ').replace(/\b\d+\s*(?:pack|pk|count|ct)\b/gi, ' ').replace(/\b\d+\s*[x×]|[x×]\s*\d+\b/gi, ' ');
   const brandWords = new Set(normalize(brand).split(' '));
-  return normalize(cleaned).split(' ').filter(word => word && !brandWords.has(word) && !['bottle', 'bottles', 'pack', 'pk', 'x'].includes(word)).sort().join(' ');
+  return normalize(cleaned).split(' ').filter(word => word && !brandWords.has(word) && !['bottle', 'bottles', 'pack', 'pk', 'count', 'ct', 'x'].includes(word)).sort().join(' ');
 }
 
 /** Accept an exact GTIN, or corroborated identity. Never take the first fuzzy result. */

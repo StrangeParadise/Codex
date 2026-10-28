@@ -124,3 +124,47 @@ test('ALDI photo and price load automatically when independent brand, name and s
     assert.equal('candidates' in p, false);
   } finally { globalThis.fetch = original; }
 });
+
+test('square-code product identifiers use validated GTINs; ordinary URLs stay separate', async () => {
+  const {parseScan} = await import('../src/codes.ts');
+  const expected = {kind:'barcode',barcode:'9339687069767'};
+  assert.deepEqual(parseScan('https://id.example/01/09339687069767/10/LOT1'),expected);
+  assert.deepEqual(parseScan('(01)09339687069767(17)271231'),expected);
+  assert.deepEqual(parseScan(']d2010933968706976717271231'),expected);
+  assert.deepEqual(parseScan('010933968706976717271231'),expected);
+  assert.deepEqual(parseScan('https://brand.example/?gtin=09339687069767'),expected);
+  assert.deepEqual(parseScan('04252614','upc_e'),{kind:'barcode',barcode:'042100005264'});
+  assert.deepEqual(parseScan('https://brand.example/about'),{kind:'website',url:'https://brand.example/about'});
+  assert.deepEqual(parseScan('https://www.costco.com.au/Grocery/Water/p/1161099_BD'),{kind:'costco',item:'1161099_BD'});
+  assert.equal(parseScan('https://www.costco.com.au.evil.example/p/1161099_BD').kind,'website');
+  assert.throws(()=>parseScan('93310645367484'),/failed its check/);
+  assert.throws(()=>parseScan('https://id.example/01/09339687069768'),/failed its check/);
+  assert.throws(()=>parseScan('javascript:alert(1)'),/not a supported/);
+  assert.throws(()=>parseScan('WIFI:S:network;P:password'),/not a supported/);
+});
+test('Costco uses public AUD prices and official photos without treating item IDs as barcodes', async () => {
+  const {parseCostcoProduct} = await import('../src/costco.ts');
+  const input = {name:'Kirkland Signature Water 30 x 600ml',code:'1161099_BD',url:'/Grocery/Water/p/1161099_BD',price:{value:12.5,currencyIso:'AUD'},images:[{format:'product',imageType:'PRIMARY',url:'/medias/water.jpg'}],classifications:[{features:[{name:'Brand',featureValues:[{value:'Kirkland Signature'}]}]}]};
+  const p=parseCostcoProduct(input,'9339687069767');
+  assert.equal(p?.retailer,'Costco AU');assert.equal(p?.brand,'Kirkland Signature');assert.equal(p?.price,12.5);assert.equal(p?.image,'https://www.costco.com.au/medias/water.jpg');assert.equal(p?.exactBarcode,false);
+  assert.equal(parseCostcoProduct({...input,images:[{format:'product',imageType:'GALLERY',galleryIndex:0,url:'/medias/gallery.jpg'}]},'')?.image,'https://www.costco.com.au/medias/gallery.jpg');
+  assert.equal(parseCostcoProduct({...input,hidePriceValue:true},'')?.price,null);
+  assert.equal(parseCostcoProduct({...input,randomWeight:true},'')?.price,null);
+  assert.equal(parseCostcoProduct({...input,price:undefined},'')?.price,null);
+  assert.equal(parseCostcoProduct({...input,price:{value:12.5,currencyIso:'USD'}},'')?.price,null);
+  assert.equal(parseCostcoProduct({...input,url:'//evil.example/p/123'},''),null);
+});
+test('Costco lookup enriches a non-water product without asking for confirmation', async () => {
+  const original=globalThis.fetch;
+  try {
+    globalThis.fetch=async url=>{
+      const target=String(url);
+      if(target.includes('woolworths')) return new Response(JSON.stringify({Products:[]}));
+      if(target.includes('openfoodfacts')) return new Response(JSON.stringify({status:1,product:{product_name:'Whole Almonds',brands:'Example Brand',quantity:'1kg',nutriments:{sugars_100g:4,'saturated-fat_100g':4,sodium_100g:0.01}}}));
+      if(target.includes('aldi.com.au')) return new Response('');
+      if(target.includes('/products/search')) return new Response(JSON.stringify({products:[{code:'123'}]}));
+      return new Response(JSON.stringify({code:'123',name:'Example Brand Whole Almonds 1kg',url:'/Grocery/Almonds/p/123',price:{currencyIso:'AUD',value:15},images:[{format:'product',imageType:'PRIMARY',url:'/medias/almonds.jpg'}],classifications:[{features:[{name:'Brand',featureValues:[{value:'Example Brand'}]}]}]}));
+    };
+    const p=await lookup('4006381333931');assert.equal(p.retailer,'Costco AU');assert.equal(p.officialPrice,15);assert.ok(p.image);assert.ok(p.health);
+  } finally {globalThis.fetch=original;}
+});

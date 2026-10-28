@@ -1,5 +1,8 @@
+import { validBarcode } from './codes.ts';
+import { costcoListings, costcoItem } from './costco.ts';
 import { classifyProduct } from './official.ts';
 import { woolworthsListings, aldiListings, selectConfidentListing, type Listing } from './retailers.ts';
+export { validBarcode } from './codes.ts';
 export type Nutrition = { sugars: number; saturatedFat: number; sodium: number };
 export function score(n: Nutrition) {
   if (Object.values(n).some(v => !Number.isFinite(v) || v < 0)) return null;
@@ -9,12 +12,6 @@ export function score(n: Nutrition) {
     { label: 'Sodium', penalty: Math.min(25, n.sodium / 600 * 25) },
   ];
   return { value: Math.round(100 - parts.reduce((s, p) => s + p.penalty, 0)), parts };
-}
-export function validBarcode(value: string) {
-  if (!/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(value)) return false;
-  const digits = [...value].map(Number);
-  const check = digits.pop();
-  return (10 - digits.reverse().reduce((s, d, i) => s + d * (i % 2 === 0 ? 3 : 1), 0) % 10) % 10 === check;
 }
 export async function lookup(barcode: string) {
   if (!validBarcode(barcode)) throw new Error('Enter a valid EAN or UPC barcode, including its check digit.');
@@ -27,8 +24,9 @@ export async function lookup(barcode: string) {
   const identity = { name: string(p.product_name), brand: string(p.brands), quantity: string(p.quantity) };
   let official = selectConfidentListing(listings, identity, true);
   if (!official) {
-    const aldi = await aldiListings(barcode, identity.name ? `${identity.brand} ${identity.name}`.trim() : barcode);
-    official = selectConfidentListing(aldi, identity, false);
+    const query = identity.name ? `${identity.brand} ${identity.name}`.trim() : barcode;
+    const [aldi, costco] = await Promise.all([aldiListings(barcode, query), costcoListings(barcode, query)]);
+    official = selectConfidentListing(aldi, identity, false) || selectConfidentListing(costco, identity, false);
   }
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
@@ -91,4 +89,10 @@ export async function lookupPrice(barcode: string): Promise<PriceResult> {
     }
     return { status: 'missing' };
   } catch { return { status: 'unavailable' }; }
+}
+
+export async function lookupCostcoItem(item: string) {
+  const official = await costcoItem(item);
+  if (!official) throw new Error('Costco product details are unavailable right now. Please try again later.');
+  return applyListing({name:official.name,brand:official.brand,description:official.description,quantity:official.quantity,categories:official.categories,ingredients:official.ingredients,barcode:`Costco item ${item}`,sugars:null,saturatedFat:null,sodium:null,known:true}, official);
 }
