@@ -1,4 +1,5 @@
-import { lookupOfficial, classifyProduct } from './official.ts';
+import { classifyProduct } from './official.ts';
+import { woolworthsListings, type Listing } from './retailers.ts';
 export type Nutrition = { sugars: number; saturatedFat: number; sodium: number };
 export function score(n: Nutrition) {
   if (Object.values(n).some(v => !Number.isFinite(v) || v < 0)) return null;
@@ -17,13 +18,12 @@ export function validBarcode(value: string) {
 }
 export async function lookup(barcode: string) {
   if (!validBarcode(barcode)) throw new Error('Enter a valid EAN or UPC barcode, including its check digit.');
-  let officialIssue = '';
-  const [official, foodResponse] = await Promise.all([
-    lookupOfficial(barcode, message => { officialIssue = message; }),
+  const [listings, foodResponse] = await Promise.all([
+    woolworthsListings(barcode),
     fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   const p = foodResponse?.status === 1 ? foodResponse.product ?? {} : {};
-  if (!official && foodResponse?.status !== 1) throw new Error(`Product not found. ${officialIssue || 'Check your connection or try another barcode.'}`);
+  const official = listings.find(listing => listing.exactBarcode) ?? null;
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   const sugars = numeric(n.sugars_100g);
@@ -31,16 +31,34 @@ export async function lookup(barcode: string) {
   const sodiumGrams = numeric(n.sodium_100g);
   const sodium = sodiumGrams === null ? null : sodiumGrams * 1000;
   const text = (v: unknown) => typeof v === 'string' ? v.trim() : '';
-  const assessment = classifyProduct(official?.name || text(p.product_name), official?.categories || text(p.categories), official?.ingredients || text(p.ingredients_text));
+  const base = {
+    name: text(p.product_name) || 'Product details not found yet', brand: text(p.brands),
+    description: text(p.generic_name), quantity: text(p.quantity),
+    categories: text(p.categories), ingredients: text(p.ingredients_text),
+    barcode, sugars, saturatedFat, sodium, known: !!official || !!text(p.product_name),
+    candidates: listings.filter(listing => !listing.exactBarcode),
+  };
+  return applyListing(base, official);
+
+}
+
+type ProductBase = {
+  name: string; brand: string; description: string; quantity: string; categories: string; ingredients: string;
+  barcode: string; sugars: number | null; saturatedFat: number | null; sodium: number | null; known: boolean; candidates: Listing[];
+};
+export function applyListing(base: ProductBase, official: Listing | null) {
+  const name = official?.name || base.name;
+  const categories = official?.categories || base.categories;
+  const ingredients = official?.ingredients || base.ingredients;
+  const assessment = classifyProduct(name, categories, ingredients);
+  const { sugars, saturatedFat, sodium } = base;
   const measured = sugars !== null && saturatedFat !== null && sodium !== null ? score({ sugars, saturatedFat, sodium }) : null;
   const estimated = !measured && assessment.estimate !== null;
   const health = assessment.kind === 'nonfood' ? null : measured || (estimated ? { value: assessment.estimate!, parts: [] } : null);
-  return { name: official?.name || text(p.product_name) || 'Unnamed product', brand: official?.brand || text(p.brands),
-    description: official?.description || text(p.generic_name), quantity: official?.quantity || text(p.quantity),
-    officialIssue, barcode, image: official?.image ?? null, officialUrl: official?.url ?? null,
-    officialPrice: official?.price ?? null, kind: assessment.kind, estimated, explanation: assessment.explanation,
-    sugars, saturatedFat, sodium, health };
-
+  return { ...base, name, brand: official?.brand || base.brand, description: official?.description || base.description,
+    quantity: official?.quantity || base.quantity, categories, ingredients, known: base.known || !!official,
+    image: official?.image ?? null, officialUrl: official?.url ?? null, officialPrice: official?.price ?? null,
+    retailer: official?.retailer ?? null, kind: assessment.kind, estimated, explanation: assessment.explanation, health };
 }
 
 export type PriceResult = { status: 'found'; amount: number; store: string; date: string; discount: boolean; official?: boolean; url?: string } | { status: 'missing' | 'unavailable' };
