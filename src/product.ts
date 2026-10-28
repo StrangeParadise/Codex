@@ -1,3 +1,4 @@
+import { lookupOfficial, classifyProduct } from './official.ts';
 export type Nutrition = { sugars: number; saturatedFat: number; sodium: number };
 export function score(n: Nutrition) {
   if (Object.values(n).some(v => !Number.isFinite(v) || v < 0)) return null;
@@ -16,11 +17,12 @@ export function validBarcode(value: string) {
 }
 export async function lookup(barcode: string) {
   if (!validBarcode(barcode)) throw new Error('Enter a valid EAN or UPC barcode, including its check digit.');
-  const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,image_front_small_url`, { signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error(`Product service returned ${response.status}. Try again later.`);
-  const data = await response.json();
-  if (data.status !== 1 || !data.product) throw new Error('Product not found. Australian coverage varies.');
-  const p = data.product;
+  const [official, foodResponse] = await Promise.all([
+    lookupOfficial(barcode),
+    fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+  ]);
+  const p = foodResponse?.status === 1 ? foodResponse.product ?? {} : {};
+  if (!official && foodResponse?.status !== 1) throw new Error('Product not found. Check your connection or try another barcode.');
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   const sugars = numeric(n.sugars_100g);
@@ -28,14 +30,19 @@ export async function lookup(barcode: string) {
   const sodiumGrams = numeric(n.sodium_100g);
   const sodium = sodiumGrams === null ? null : sodiumGrams * 1000;
   const text = (v: unknown) => typeof v === 'string' ? v.trim() : '';
-  const image = text(p.image_front_small_url);
-  return { name: text(p.product_name) || 'Unnamed product', brand: text(p.brands),
-    description: text(p.generic_name), quantity: text(p.quantity),
-    image: image.startsWith('https://images.openfoodfacts.org/') ? image : null, sugars, saturatedFat, sodium,
-    health: sugars !== null && saturatedFat !== null && sodium !== null ? score({ sugars, saturatedFat, sodium }) : null };
+  const assessment = classifyProduct(official?.name || text(p.product_name), official?.categories || text(p.categories), official?.ingredients || text(p.ingredients_text));
+  const measured = sugars !== null && saturatedFat !== null && sodium !== null ? score({ sugars, saturatedFat, sodium }) : null;
+  const estimated = !measured && assessment.estimate !== null;
+  const health = assessment.kind === 'nonfood' ? null : measured || (estimated ? { value: assessment.estimate!, parts: [] } : null);
+  return { name: official?.name || text(p.product_name) || 'Unnamed product', brand: official?.brand || text(p.brands),
+    description: official?.description || text(p.generic_name), quantity: official?.quantity || text(p.quantity),
+    image: official?.image ?? null, officialUrl: official?.url ?? null,
+    officialPrice: official?.price ?? null, kind: assessment.kind, estimated, explanation: assessment.explanation,
+    sugars, saturatedFat, sodium, health };
+
 }
 
-export type PriceResult = { status: 'found'; amount: number; store: string; date: string; discount: boolean } | { status: 'missing' | 'unavailable' };
+export type PriceResult = { status: 'found'; amount: number; store: string; date: string; discount: boolean; official?: boolean; url?: string } | { status: 'missing' | 'unavailable' };
 
 // Open Prices records are observations, never a promise of today's shelf price.
 export async function lookupPrice(barcode: string): Promise<PriceResult> {

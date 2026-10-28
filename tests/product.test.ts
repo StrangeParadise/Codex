@@ -24,12 +24,12 @@ test('lookup preserves missing nutrients and converts sodium grams to milligrams
   } finally { globalThis.fetch = original; }
 });
 
-test('product details include description, quantity and a safe photo URL', async () => {
+test('product details keep community nutrition but do not use community photos', async () => {
   const original = globalThis.fetch;
   try {
     globalThis.fetch = async () => new Response(JSON.stringify({status: 1, product: { product_name: 'Oats', generic_name: 'Wholegrain rolled oats', quantity: '750 g', image_front_small_url: 'https://images.openfoodfacts.org/images/example.jpg' }}));
     const p = await lookup('4006381333931');
-    assert.equal(p.description, 'Wholegrain rolled oats'); assert.equal(p.quantity, '750 g'); assert.ok(p.image);
+    assert.equal(p.description, 'Wholegrain rolled oats'); assert.equal(p.quantity, '750 g'); assert.equal(p.image, null);
   } finally { globalThis.fetch = original; }
 });
 
@@ -47,4 +47,26 @@ test('only Australian whole-item prices are shown, with shop and date', async ()
     globalThis.fetch = async () => new Response('', {status: 503});
     assert.deepEqual(await lookupPrice('4006381333931'), {status: 'unavailable'});
   } finally { globalThis.fetch = original; }
+});
+
+test('official products require exact barcode match and use retailer photo and price', async () => {
+  const { lookupOfficial } = await import('../src/official.ts');
+  const original = globalThis.fetch;
+  try {
+    const product = { Barcode: '9300633394172', Stockcode: 749792, Name: 'Spring Water', Price: 4.95, LargeImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/large/749792.jpg', AdditionalAttributes: { ingredients: '100% Natural Spring Water' } };
+    globalThis.fetch = async () => new Response(JSON.stringify({ Products: [{ Products: [product] }] }));
+    const p = await lookupOfficial('9300633394172');
+    assert.equal(p?.price, 4.95); assert.ok(p?.image); assert.equal(p?.ingredients, '100% Natural Spring Water');
+    assert.equal(await lookupOfficial('4006381333931'), null);
+    globalThis.fetch = async () => new Response('', {status: 403});
+    assert.equal(await lookupOfficial('9300633394172'), null);
+  } finally { globalThis.fetch = original; }
+});
+test('plain water gets an explained estimate; flavoured water and missing data are not assumed healthy', async () => {
+  const { classifyProduct } = await import('../src/official.ts');
+  assert.equal(classifyProduct('Spring Water', '', '100% Natural Spring Water').estimate, 100);
+  assert.equal(classifyProduct('Flavoured Water', '', 'Water, sugar, flavour').estimate, null);
+  assert.equal(classifyProduct('Spring Water', '', '').estimate, null);
+  assert.equal(classifyProduct('Shampoo', 'Hair care', '').kind, 'nonfood');
+  assert.equal(classifyProduct('Shampoo', 'Hair care', '').estimate, null);
 });
