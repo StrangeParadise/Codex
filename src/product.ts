@@ -1,5 +1,5 @@
 import { classifyProduct } from './official.ts';
-import { woolworthsListings, type Listing } from './retailers.ts';
+import { woolworthsListings, aldiListings, selectConfidentListing, type Listing } from './retailers.ts';
 export type Nutrition = { sugars: number; saturatedFat: number; sodium: number };
 export function score(n: Nutrition) {
   if (Object.values(n).some(v => !Number.isFinite(v) || v < 0)) return null;
@@ -23,7 +23,13 @@ export async function lookup(barcode: string) {
     fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   const p = foodResponse?.status === 1 ? foodResponse.product ?? {} : {};
-  const official = listings.find(listing => listing.exactBarcode) ?? null;
+  const string = (v: unknown) => typeof v === 'string' ? v.trim() : '';
+  const identity = { name: string(p.product_name), brand: string(p.brands), quantity: string(p.quantity) };
+  let official = selectConfidentListing(listings, identity, true);
+  if (!official) {
+    const aldi = await aldiListings(barcode, identity.name ? `${identity.brand} ${identity.name}`.trim() : barcode);
+    official = selectConfidentListing(aldi, identity, false);
+  }
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   const sugars = numeric(n.sugars_100g);
@@ -36,7 +42,6 @@ export async function lookup(barcode: string) {
     description: text(p.generic_name), quantity: text(p.quantity),
     categories: text(p.categories), ingredients: text(p.ingredients_text),
     barcode, sugars, saturatedFat, sodium, known: !!official || !!text(p.product_name),
-    candidates: listings.filter(listing => !listing.exactBarcode),
   };
   return applyListing(base, official);
 
@@ -44,7 +49,7 @@ export async function lookup(barcode: string) {
 
 type ProductBase = {
   name: string; brand: string; description: string; quantity: string; categories: string; ingredients: string;
-  barcode: string; sugars: number | null; saturatedFat: number | null; sodium: number | null; known: boolean; candidates: Listing[];
+  barcode: string; sugars: number | null; saturatedFat: number | null; sodium: number | null; known: boolean;
 };
 export function applyListing(base: ProductBase, official: Listing | null) {
   const name = official?.name || base.name;

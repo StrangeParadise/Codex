@@ -8,16 +8,6 @@ const text = (v: unknown): string => typeof v === 'string' ? v.replace(/<[^>]*>/
 const amount = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
 const gtin = (v: string) => v.padStart(14, '0');
 
-export function storeLinks(query: string) {
-  const q = encodeURIComponent(query);
-  return [
-    { name: 'Woolworths', url: `https://www.woolworths.com.au/shop/search/products?searchTerm=${q}`, label: 'Search Woolworths' },
-    { name: 'Coles', url: `https://www.coles.com.au/search?q=${q}`, label: 'Search Coles' },
-    { name: 'ALDI', url: `https://www.aldi.com.au/results?q=${q}`, label: 'Search ALDI' },
-    { name: 'IGA', url: 'https://www.igashop.com.au/', label: 'Choose your IGA store' },
-  ];
-}
-
 export async function woolworthsListings(barcode: string): Promise<Listing[]> {
   try {
     const r = await fetch(`https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(barcode)}&pageSize=5&pageNumber=1`, { signal: AbortSignal.timeout(10000) });
@@ -72,4 +62,46 @@ export async function aldiListings(barcode: string, query: string): Promise<List
     }));
     return results.filter((r): r is Listing => r !== null);
   } catch { return []; }
+}
+
+export type ProductIdentity = { name: string; brand: string; quantity: string };
+const normalize = (value: string) => value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const sizePattern = /(\d+(?:\.\d+)?)\s*(ml|kg|litres?|liters?|grams?|l|g)\b/i;
+function packSize(value: string): string | null {
+  const m = value.match(sizePattern);
+  if (!m) return null;
+  const unit = m[2].toLowerCase();
+  const volume = /^(ml|l|lit)/.test(unit);
+  const amount = Number(m[1]) * (unit === 'kg' || (volume && unit !== 'ml') ? 1000 : 1);
+  const before = value.slice(0, m.index);
+  const after = value.slice((m.index ?? 0) + m[0].length);
+  const count = before.match(/(\d+)\s*[x×]\s*$/i)?.[1] || after.match(/^\s*[x×]\s*(\d+)/i)?.[1] || value.match(/\b(\d+)\s*(?:pack|pk)\b/i)?.[1] || '1';
+  return `${count}x${amount}${volume ? 'ml' : 'g'}`;
+}
+function productName(name: string, brand: string) {
+  const cleaned = name.replace(new RegExp(sizePattern.source, 'gi'), ' ').replace(/\b\d+\s*(?:pack|pk)\b/gi, ' ').replace(/\b\d+\s*[x×]|[x×]\s*\d+\b/gi, ' ');
+  const brandWords = new Set(normalize(brand).split(' '));
+  return normalize(cleaned).split(' ').filter(word => word && !brandWords.has(word) && !['bottle', 'bottles', 'pack', 'pk', 'x'].includes(word)).sort().join(' ');
+}
+
+/** Accept an exact GTIN, or corroborated identity. Never take the first fuzzy result. */
+export function selectConfidentListing(listings: Listing[], identity: ProductIdentity, barcodeSearch: boolean): Listing | null {
+  const unique = [...new Map(listings.map(p => [p.url, p])).values()];
+  const exact = unique.filter(p => p.exactBarcode);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const brands = identity.brand.split(',').map(normalize).filter(Boolean);
+  if (!identity.name || !brands.length) return null;
+  const size = packSize(identity.quantity) ?? packSize(identity.name);
+  const matches = unique.filter(p => {
+    if (!brands.includes(normalize(p.brand))) return false;
+    const wanted = productName(identity.name, p.brand);
+    if (!wanted || wanted !== productName(p.name, p.brand)) return false;
+    const candidateSize = packSize(p.quantity) ?? packSize(p.name);
+    // Name search needs matching brand, variant AND pack size. A single result
+    // from a barcode-specific search may omit a size in the independent record.
+    if (size && candidateSize) return size === candidateSize;
+    return barcodeSearch && unique.length === 1 && size === null;
+  });
+  return matches.length === 1 ? matches[0] : null;
 }

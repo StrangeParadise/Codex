@@ -55,23 +55,18 @@ test('products from any shop keep nutrition when Woolworths has no listing', asy
   try {
     globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('woolworths') ? {Products: []} : { status: 1, product: { product_name: 'Coles oats', brands: 'Coles', nutriments: {sugars_100g: 1, 'saturated-fat_100g': 1, sodium_100g: 0.01} } }));
     const p = await lookup('4006381333931');
-    assert.equal(p.known, true); assert.equal(p.name, 'Coles oats'); assert.ok(p.health); assert.equal(p.candidates.length, 0);
+    assert.equal(p.known, true); assert.equal(p.name, 'Coles oats'); assert.ok(p.health);
     assert.equal('officialIssue' in p, false);
   } finally { globalThis.fetch = original; }
 });
-test('different barcodes become confirmable listings for any item, never automatic matches', async () => {
-  const { applyListing } = await import('../src/product.ts');
+test('barcode-specific result with matching brand and product resolves automatically', async () => {
   const original = globalThis.fetch;
   try {
-    const bottle = { Barcode: '9300633394189', Stockcode: 749793, Name: 'Spring Water', Price: 0.95, LargeImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/large/749793.jpg', AdditionalAttributes: {ingredients: '100% Natural Spring Water'} };
-    globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('woolworths') ? {Products: [{Products: [bottle]}]} : {status: 0}));
+    const bottle = { Barcode: '9300633394189', Stockcode: 749793, Brand: 'Woolworths', Name: 'Woolworths Spring Water Bottle', PackageSize: '1.5L', Price: 0.95, LargeImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/large/749793.jpg', AdditionalAttributes: {ingredients: '100% Natural Spring Water'} };
+    globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes('woolworths') ? {Products: [{Products: [bottle]}]} : {status: 1, product: {product_name: 'Spring Water', brands: 'Woolworths'}}));
     const p = await lookup('9339687069767');
-    assert.equal(p.image, null); assert.equal(p.officialPrice, null); assert.equal(p.candidates.length, 1);
-    const confirmed = applyListing(p, p.candidates[0]);
-    assert.equal(confirmed.officialPrice, 0.95); assert.ok(confirmed.image); assert.equal(confirmed.health?.value, 100);
-    assert.equal(confirmed.known, true);
-    // The same flow works for an unknown barcode without a hard-coded alias.
-    assert.equal((await lookup('4006381333931')).candidates.length, 1);
+    assert.equal(p.officialPrice, 0.95); assert.ok(p.image); assert.equal(p.health?.value, 100);
+    assert.equal(p.known, true); assert.equal('candidates' in p, false);
   } finally { globalThis.fetch = original; }
 });
 test('exact retailer barcode can populate the product without confirmation', async () => {
@@ -99,4 +94,33 @@ test('plain water estimates and non-food guidance remain independent of the reta
   assert.equal(classifyProduct('Water', '', '100% Natural Spring Water').estimate,100);
   assert.equal(classifyProduct('Flavoured water', '', 'Water, sugar').estimate,null);
   assert.equal(classifyProduct('Shampoo', 'Hair care', '').kind,'nonfood');
+});
+
+test('automatic matching rejects different brands, flavours, sizes and ambiguous results', async () => {
+  const { selectConfidentListing, parseAldiPage } = await import('../src/retailers.ts');
+  const data = { '@type': 'Product', name: 'Soda Water 1.25L', brand: {name:'REGAL'}, image: ['https://dm.apac.cms.aldi.cx/product.jpg'], offers: {price: '1.09',priceCurrency:'AUD'} };
+  const listing = parseAldiPage(`<script type="application/ld+json">${JSON.stringify(data)}</script>`, 'https://www.aldi.com.au/product/soda', '4006381333931')!;
+  const identity = {name:'Soda Water',brand:'Regal',quantity:'1250 ml'};
+  assert.equal(selectConfidentListing([listing], identity, false)?.price, 1.09);
+  assert.equal(selectConfidentListing([listing], {...identity,brand:'Other'}, false), null);
+  assert.equal(selectConfidentListing([listing], {...identity,name:'Soda Water With Lime'}, false), null);
+  assert.equal(selectConfidentListing([listing], {...identity,quantity:'6 x 1.25L'}, false), null);
+  assert.equal(selectConfidentListing([listing], {...identity,quantity:''}, false), null);
+  assert.equal(selectConfidentListing([listing, {...listing,url:listing.url+'-2'}], identity, false), null);
+  assert.equal(selectConfidentListing([{...listing,quantity:'1.5L x 6 pack',name:'Water'}], {name:'Water',brand:'Regal',quantity:'9L'}, false), null);
+});
+test('ALDI photo and price load automatically when independent brand, name and size agree', async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async url => {
+      const target = String(url);
+      if (target.includes('woolworths')) return new Response(JSON.stringify({Products:[]}));
+      if (target.includes('openfoodfacts')) return new Response(JSON.stringify({status:1,product:{product_name:'Soda Water',brands:'Regal',quantity:'1.25L'}}));
+      if (target.includes('/results?')) return new Response('<a href="/product/regal-soda-water">Soda water</a>');
+      return new Response('<script type="application/ld+json">{"@type":"Product","name":"Soda Water 1.25L","brand":{"name":"REGAL"},"image":["https://dm.apac.cms.aldi.cx/product.jpg"],"offers":{"price":"1.09","priceCurrency":"AUD"}}</script>');
+    };
+    const p = await lookup('4006381333931');
+    assert.equal(p.retailer, 'ALDI'); assert.equal(p.officialPrice, 1.09); assert.ok(p.image);
+    assert.equal('candidates' in p, false);
+  } finally { globalThis.fetch = original; }
 });
