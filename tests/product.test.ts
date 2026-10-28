@@ -70,3 +70,26 @@ test('plain water gets an explained estimate; flavoured water and missing data a
   assert.equal(classifyProduct('Shampoo', 'Hair care', '').kind, 'nonfood');
   assert.equal(classifyProduct('Shampoo', 'Hair care', '').estimate, null);
 });
+
+test('supplier barcode for single water bottle uses verified official match, not six-pack', async () => {
+  const original = globalThis.fetch;
+  const bottle = { Barcode: '9300633394189', Stockcode: 749793, Name: 'Woolworths Spring Water Bottle', Price: 0.95, LargeImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/large/749793.jpg', AdditionalAttributes: { ingredients: '100% Natural Spring Water' } };
+  try {
+    globalThis.fetch = async (url) => new Response(JSON.stringify(String(url).includes('woolworths.com.au') ? { Products: [{ Products: [bottle] }] } : {status: 1, product: {product_name: 'Spring Water'}}));
+    const p = await lookup('9339687069767');
+    assert.equal(p.officialPrice, 0.95); assert.ok(p.image?.endsWith('749793.jpg')); assert.equal(p.health?.value, 100);
+    assert.equal(p.estimated, true); assert.equal(p.officialIssue, '');
+  } finally { globalThis.fetch = original; }
+});
+test('official page fallback preserves exact match and reports blocked sources', async () => {
+  const { lookupOfficial } = await import('../src/official.ts');
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => String(url).includes('/apis/') ? new Response('', {status: 403}) : new Response('<script type="application/ld+json">{"@type":"Product","gtin":"9300633394189","sku":"749793","name":"Spring Water","image":"https://cdn0.woolworths.media/content/wowproductimages/large/749793.jpg","offers":{"priceCurrency":"AUD","price":0.95}}</script><script>{"ingredients":"100% Natural Spring Water"}</script>');
+    assert.equal((await lookupOfficial('9339687069767'))?.price, 0.95);
+    globalThis.fetch = async () => new Response('', {status: 403});
+    let issue = '';
+    assert.equal(await lookupOfficial('9339687069767', message => { issue = message; }), null);
+    assert.match(issue, /could not be reached/);
+  } finally { globalThis.fetch = original; }
+});

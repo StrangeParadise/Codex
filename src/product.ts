@@ -17,12 +17,13 @@ export function validBarcode(value: string) {
 }
 export async function lookup(barcode: string) {
   if (!validBarcode(barcode)) throw new Error('Enter a valid EAN or UPC barcode, including its check digit.');
+  let officialIssue = '';
   const [official, foodResponse] = await Promise.all([
-    lookupOfficial(barcode),
+    lookupOfficial(barcode, message => { officialIssue = message; }),
     fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   const p = foodResponse?.status === 1 ? foodResponse.product ?? {} : {};
-  if (!official && foodResponse?.status !== 1) throw new Error('Product not found. Check your connection or try another barcode.');
+  if (!official && foodResponse?.status !== 1) throw new Error(`Product not found. ${officialIssue || 'Check your connection or try another barcode.'}`);
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
   const sugars = numeric(n.sugars_100g);
@@ -36,7 +37,7 @@ export async function lookup(barcode: string) {
   const health = assessment.kind === 'nonfood' ? null : measured || (estimated ? { value: assessment.estimate!, parts: [] } : null);
   return { name: official?.name || text(p.product_name) || 'Unnamed product', brand: official?.brand || text(p.brands),
     description: official?.description || text(p.generic_name), quantity: official?.quantity || text(p.quantity),
-    image: official?.image ?? null, officialUrl: official?.url ?? null,
+    officialIssue, barcode, image: official?.image ?? null, officialUrl: official?.url ?? null,
     officialPrice: official?.price ?? null, kind: assessment.kind, estimated, explanation: assessment.explanation,
     sugars, saturatedFat, sodium, health };
 
