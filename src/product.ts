@@ -17,7 +17,7 @@ export async function lookup(barcode: string) {
   if (!validBarcode(barcode)) throw new Error('Enter a valid EAN or UPC barcode, including its check digit.');
   const [listings, foodResponse] = await Promise.all([
     woolworthsListings(barcode),
-    fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=product_name,brands,nutriments,generic_name,quantity,categories,ingredients_text,image_front_url`, { signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   const p = foodResponse?.status === 1 ? foodResponse.product ?? {} : {};
   const string = (v: unknown) => typeof v === 'string' ? v.trim() : '';
@@ -25,8 +25,11 @@ export async function lookup(barcode: string) {
   let official = selectConfidentListing(listings, identity, true);
   if (!official) {
     const query = identity.name ? `${identity.brand} ${identity.name}`.trim() : barcode;
-    const [aldi, costco] = await Promise.all([aldiListings(barcode, query), costcoListings(barcode, query)]);
-    official = selectConfidentListing(aldi, identity, false) || selectConfidentListing(costco, identity, false);
+    const [byName, aldi, costco] = await Promise.all([
+      identity.name ? woolworthsListings(barcode, query) : Promise.resolve([]),
+      aldiListings(barcode, query), costcoListings(barcode, query),
+    ]);
+    official = selectConfidentListing(byName, identity, false) || selectConfidentListing(aldi, identity, false) || selectConfidentListing(costco, identity, false);
   }
   const n = p.nutriments ?? {};
   const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
@@ -39,6 +42,7 @@ export async function lookup(barcode: string) {
     name: text(p.product_name) || 'Product details not found yet', brand: text(p.brands),
     description: text(p.generic_name), quantity: text(p.quantity),
     categories: text(p.categories), ingredients: text(p.ingredients_text),
+    communityImage: typeof p.image_front_url === 'string' && p.image_front_url.startsWith('https://images.openfoodfacts.org/') ? p.image_front_url : null,
     barcode, sugars, saturatedFat, sodium, known: !!official || !!text(p.product_name),
   };
   return applyListing(base, official);
@@ -47,7 +51,7 @@ export async function lookup(barcode: string) {
 
 type ProductBase = {
   name: string; brand: string; description: string; quantity: string; categories: string; ingredients: string;
-  barcode: string; sugars: number | null; saturatedFat: number | null; sodium: number | null; known: boolean;
+  communityImage?: string | null; barcode: string; sugars: number | null; saturatedFat: number | null; sodium: number | null; known: boolean;
 };
 export function applyListing(base: ProductBase, official: Listing | null) {
   const name = official?.name || base.name;
@@ -60,7 +64,8 @@ export function applyListing(base: ProductBase, official: Listing | null) {
   const health = assessment.kind === 'nonfood' ? null : measured || (estimated ? { value: assessment.estimate!, parts: [] } : null);
   return { ...base, name, brand: official?.brand || base.brand, description: official?.description || base.description,
     quantity: official?.quantity || base.quantity, categories, ingredients, known: base.known || !!official,
-    image: official?.image ?? null, officialUrl: official?.url ?? null, officialPrice: official?.price ?? null,
+    image: official?.image || base.communityImage || null, fallbackImage: base.communityImage || null,
+    imageSource: official?.image ? official.retailer : base.communityImage ? 'Open Food Facts' : null, officialUrl: official?.url ?? null, officialPrice: official?.price ?? null,
     retailer: official?.retailer ?? null, kind: assessment.kind, estimated, explanation: assessment.explanation, health };
 }
 
@@ -70,7 +75,7 @@ export type PriceResult = { status: 'found'; amount: number; store: string; date
 export async function lookupPrice(barcode: string): Promise<PriceResult> {
   if (!validBarcode(barcode)) return { status: 'missing' };
   try {
-    const response = await fetch(`https://prices.openfoodfacts.org/api/v1/prices/?product_code=${barcode}&currency=AUD&order_by=-date&size=50`, { signal: AbortSignal.timeout(8000) });
+    const response = await fetch(`https://prices.openfoodfacts.org/api/v1/prices?product_code=${barcode}&currency=AUD&order_by=-date&size=50`, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) return { status: 'unavailable' };
     const data = await response.json();
     if (!Array.isArray(data.items)) return { status: 'unavailable' };

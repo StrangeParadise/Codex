@@ -24,10 +24,10 @@ test('lookup preserves missing nutrients and converts sodium grams to milligrams
   } finally { globalThis.fetch = original; }
 });
 
-test('product details keep community nutrition but do not use community photos', async () => {
+test('product details preserve nutrition and reject untrusted photo hosts', async () => {
   const original = globalThis.fetch;
   try {
-    globalThis.fetch = async () => new Response(JSON.stringify({status: 1, product: { product_name: 'Oats', generic_name: 'Wholegrain rolled oats', quantity: '750 g', image_front_small_url: 'https://images.openfoodfacts.org/images/example.jpg' }}));
+    globalThis.fetch = async () => new Response(JSON.stringify({status: 1, product: { product_name: 'Oats', generic_name: 'Wholegrain rolled oats', quantity: '750 g', image_front_url: 'https://untrusted.example/images/example.jpg' }}));
     const p = await lookup('4006381333931');
     assert.equal(p.description, 'Wholegrain rolled oats'); assert.equal(p.quantity, '750 g'); assert.equal(p.image, null);
   } finally { globalThis.fetch = original; }
@@ -167,4 +167,40 @@ test('Costco lookup enriches a non-water product without asking for confirmation
     };
     const p=await lookup('4006381333931');assert.equal(p.retailer,'Costco AU');assert.equal(p.officialPrice,15);assert.ok(p.image);assert.ok(p.health);
   } finally {globalThis.fetch=original;}
+});
+
+test('Coles egg photo remains available without an official supermarket match', async () => {
+  const original=globalThis.fetch;
+  try {
+    globalThis.fetch=async url=>{
+      const target=String(url);
+      if(target.includes('world.openfoodfacts.org'))return new Response(JSON.stringify({status:1,product:{product_name:'Egg',brands:'Coles cage free',quantity:'700 g',image_front_url:'https://images.openfoodfacts.org/images/products/931/064/536/7484/front_en.4.400.jpg'}}));
+      if(target.includes('woolworths'))return new Response(JSON.stringify({Products:[]}));
+      return new Response('{}');
+    };
+    const p=await lookup('9310645367484');
+    assert.ok(p.image?.includes('/931/064/536/7484/'));assert.equal(p.imageSource,'Open Food Facts');assert.equal(p.officialPrice,null);assert.equal(p.officialUrl,null);
+  }finally{globalThis.fetch=original;}
+});
+test('Woolworths name search finds a confident match after barcode search returns none', async()=>{
+  const original=globalThis.fetch;
+  try{
+    globalThis.fetch=async url=>{
+      const target=String(url);
+      if(target.includes('world.openfoodfacts.org'))return new Response(JSON.stringify({status:1,product:{product_name:'Wholegrain Oats',brands:'Woolworths',quantity:'750 g',image_front_url:'https://images.openfoodfacts.org/fallback.jpg'}}));
+      if(target.includes('woolworths')){
+        const term=new URL(target).searchParams.get('searchTerm');
+        return new Response(JSON.stringify({Products:term==='4006381333931'?[]:[{Products:[{Stockcode:123,Barcode:'96385074',Name:'Woolworths Wholegrain Oats',Brand:'Woolworths',PackageSize:'750 g',Price:2.5,LargeImageFile:'https://cdn0.woolworths.media/oats.jpg'}]}]}));
+      }
+      return new Response('{}');
+    };
+    const p=await lookup('4006381333931');assert.equal(p.officialPrice,2.5);assert.equal(p.imageSource,'Woolworths');assert.equal(p.image,'https://cdn0.woolworths.media/oats.jpg');assert.ok(p.fallbackImage);
+  }finally{globalThis.fetch=original;}
+});
+test('backup price endpoint uses the working slash-free route',async()=>{
+  const {lookupPrice}=await import('../src/product.ts');const original=globalThis.fetch;
+  try{
+    globalThis.fetch=async url=>{assert.equal(new URL(String(url)).pathname,'/api/v1/prices');return new Response(JSON.stringify({items:[]}));};
+    assert.deepEqual(await lookupPrice('9310645367484'),{status:'missing'});
+  }finally{globalThis.fetch=original;}
 });

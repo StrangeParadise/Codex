@@ -8,9 +8,9 @@ const text = (v: unknown): string => typeof v === 'string' ? v.replace(/<[^>]*>/
 const amount = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
 const gtin = (v: string) => v.padStart(14, '0');
 
-export async function woolworthsListings(barcode: string): Promise<Listing[]> {
+export async function woolworthsListings(barcode: string, searchTerm = barcode): Promise<Listing[]> {
   try {
-    const r = await fetch(`https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(barcode)}&pageSize=5&pageNumber=1`, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(`https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(searchTerm)}&pageSize=5&pageNumber=1`, { signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
     const data = await r.json();
     if (!Array.isArray(data.Products)) return [];
